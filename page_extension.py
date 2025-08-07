@@ -32,7 +32,6 @@ class PageExtensionAnalyzer:
             ".rb": "Ruby",
         }
 
-        # Eğer path zaten extension içeriyorsa direkt dön
         for ext, lang in lang_dict.items():
             if ext in path:
                 self.result["language"] = lang
@@ -53,9 +52,7 @@ class PageExtensionAnalyzer:
             urls_to_try = []
 
             if path.endswith('/'):
-                # Önce uzantı + '/' ile
                 urls_to_try.append(f"{base_path}{ext}/")
-                # Sonra uzantı ile sonundaki '/'
                 urls_to_try.append(f"{base_path}{ext}")
             else:
                 urls_to_try.append(f"{base_path}{ext}")
@@ -89,6 +86,7 @@ url = "http://10.10.10.18/shepherd/login.jsp"
 url = "https://tr-wiki.metin2.gameforge.com/index/"
 p = PageExtensionAnalyzer(url,"","","")
 a = p.analyze()
+
 
 
 
