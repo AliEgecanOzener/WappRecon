@@ -82,10 +82,6 @@ class PageExtensionAnalyzer:
         return self.result
 
 
-url = "http://10.10.10.18/shepherd/login.jsp"
-url = "https://tr-wiki.metin2.gameforge.com/index/"
-p = PageExtensionAnalyzer(url,"","","")
-a = p.analyze()
 
 
 
