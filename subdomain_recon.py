@@ -4,10 +4,12 @@ from termcolor import colored
 from dnsrecon import DNSRecon
 from utils import Utils
 import requests
+from bs4 import BeautifulSoup
 
 init()
 
 class SubdomainRecon:
+
     def __init__(self, url, cookie="", proxy="", basic_auth_creds=""):
         self.url = url
         self.utils = Utils(self.url)
@@ -18,76 +20,116 @@ class SubdomainRecon:
         self.subdomains = set()
         self.available_subdomains = set()
         self.unavailable_subdomains = set()
+        self.untested_subdomains = set()
 
         self.user_agent = self.utils.get_random_user_agent()
         self.headers = {"User-Agent": self.user_agent}
         self.dnsrecon = DNSRecon(self.url, self.cookie, self.proxy, self.basic_auth_creds)
 
+
     def subdomain_recon(self):
         print(colored("*" * 50, "yellow", attrs=['bold']))
         print(colored("SUBDOMAIN RECONNAISSANCE", "yellow", attrs=['bold']))
-        print(colored("[INFO] Subdomain recon is starting...", "yellow"))
+        print(colored("Subdomain recon is starting...", "yellow"))
 
-        print(colored("[INFO] Scanning with crt.sh...", "yellow"))
-        crtsh_domains = self.crt_sh()
-        if crtsh_domains:
-            self.subdomains.update(crtsh_domains)
+        print("Checking crt.sh...")
+        self.crt_sh()
 
-        print(colored("\n[INFO] Scanning with AXFR...", "yellow"))
-        axfr_domains = self.dnsrecon.axfr()
-        if axfr_domains:
-            self.subdomains.update(axfr_domains)
+        print("Checking zone transfer...")
+        self.dnsrecon.return_axfr_subdomains()
+
+        print("Checking hackertarget.com...")
+        self.get_subdomains_hackertarget()
+
+        print("Checking WayBack Archive...")
+        self.get_subdomains_wayback()
 
         self.print_subdomains()
+        print("\nSubdomain recon finished.")
         return self.subdomains
 
     def crt_sh(self):
-        if not self.utils.is_valid_url(self.url):
-            print(colored("[ERROR] Given URL is invalid. Quitting...", "light_red"))
-            return set()
+        if not self.utils.is_valid_target():
+            print(colored("[WARNING] Invalid target. Quitting...", "light_red"))
+            return
 
-        domain = self.utils.get_domain_name(self.url)
-        if not self.utils.is_valid_domain(domain):
-            print(colored(f"[ERROR] Domain {domain} is invalid. Quitting...", "light_red"))
-            return set()
-
+        domain = self.utils.get_base_domain(self.url)
         try:
             url = f"https://crt.sh/?q={domain}&output=json"
             resp = requests.get(url=url, timeout=120, headers=self.headers)
             if 200 <= resp.status_code < 300:
-                return self.crtsh_json(resp.text)
-            else:
-                print(colored(f"[ERROR] Domain {domain} is not found on crt.sh. Quitting", "light_red"))
-                return set()
-        except requests.RequestException as e:
-            print(colored(f"[ERROR] Failed to fetch subdomains: {e}", "light_red"))
-            return set()
+                self.crtsh_json(resp.text)
+        except requests.RequestException:
+            return
 
     def crtsh_json(self, resp_text):
         try:
             data = json.loads(resp_text)
-        except json.JSONDecodeError as e:
-            print(f"[ERROR] JSON parse hatası: {e}")
+        except json.JSONDecodeError:
             return
 
-        name_value = {entry["name_value"] for entry in data if "name_value" in entry}
         domain = self.utils.get_domain_name(self.url)
-        filtered = set()
-        for name in name_value:
-            n = name.split('\n')
-            for a in n:
-                if domain in a:
-                    if a not in filtered:
-                        if "*" not in a:
-                            filtered.add(a.strip())
-        return filtered
+        for entry in data:
+            name_value = entry.get("name_value", "")
+            for sub in name_value.split('\n'):
+                sub = sub.strip()
+                if domain in sub and "*" not in sub:
+                    self.subdomains.add(sub)
+
+    def get_subdomains_hackertarget(self):
+        if not self.utils.is_valid_target():
+            print(colored("[WARNING] Invalid target. Quitting...", "light_red"))
+            return
+
+        domain = self.utils.get_base_domain(self.url)
+        url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
+        try:
+            r = requests.get(url, timeout=10)
+            for line in r.text.splitlines():
+                parts = line.split(",")
+                if len(parts) > 0:
+                    self.subdomains.add(parts[0].strip())
+
+        except Exception:
+            return
+
+    def get_subdomains_wayback(self):
+        if not self.utils.is_valid_target():
+            print(colored("[WARNING] Invalid target. Quitting...", "light_red"))
+            return
+
+        domain = self.utils.get_base_domain(self.url)
+        wayback_url = f"http://web.archive.org/cdx/search/cdx?url=*.{domain}/*&output=json&fl=original"
+        headers = {
+            "User-Agent": self.utils.get_random_user_agent()
+        }
+        try:
+            response = requests.get(url=wayback_url, headers=headers, timeout=(5, 10))
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            href_links = [a.get("href") for a in soup.find_all("a") if a.get("href")]
+            src_links = [tag.get("src") for tag in soup.find_all(src=True)]
+
+            for link in href_links + src_links:
+                netloc = self.utils.parse_url(link)['netloc']
+                if netloc and domain in netloc:
+                    if netloc not in self.subdomains:
+                        print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+                        self.subdomains.add(netloc)
+
+        except requests.exceptions.Timeout:
+            print(f"Request timeout for {wayback_url}")
+        except Exception as e:
+            print(f"Error occurred {e}")
 
     def print_subdomains(self):
-        print("\n" + colored("[INFO] Found Subdomains:", "light_green"))
+        total = len(self.subdomains)
         for sub in sorted(self.subdomains):
             print(sub)
+        print(f"\nFound {total} Subdomains.")
 
-    def print_subdomain_info(self, untested):
+    def print_subdomain_status(self, untested):
+
         print("\n" + colored("[INFO] Subdomain Status", "light_green"))
         print(colored("[INFO] Available Subdomains", "light_green"))
         for s in sorted(self.available_subdomains):
@@ -121,28 +163,22 @@ class SubdomainRecon:
             next_round = []
 
             for subdomain in untested_subdomains:
-                print("\n" + colored(f"[INFO] Checking subdomain: {subdomain}", "yellow"))
+                #print("\n" + colored(f"[INFO] Checking subdomain: {subdomain}", "yellow"))
 
                 https_result = self.check_url(f"https://{subdomain}")
                 http_result = self.check_url(f"http://{subdomain}") if https_result is not True else True
 
                 if https_result or http_result:
-                    print(colored(f"[FOUND] {subdomain} is available.", "light_green"))
+                    #print(colored(f"[FOUND] {subdomain} is available.", "light_green"))
                     self.available_subdomains.add(subdomain)
                 elif https_result is None or http_result is None:
-                    print(colored(f"[INFO] {subdomain} could not be tested.", "yellow"))
+                    #print(colored(f"[INFO] {subdomain} could not be tested.", "yellow"))
                     next_round.append(subdomain)
                 else:
-                    print(colored(f"[INFO] {subdomain} is unavailable.", "yellow"))
+                    #print(colored(f"[INFO] {subdomain} is unavailable.", "yellow"))
                     self.unavailable_subdomains.add(subdomain)
 
             untested_subdomains = next_round
             retries += 1
 
-        self.print_subdomain_info(untested_subdomains)
-
-
-if __name__ == "__main__":
-    target = "https://zonetransfer.me/"
-    subdomain_hunter = SubdomainRecon(target)
-    subdomain_hunter.subdomain_recon()
+        self.untested_subdomains = set(untested_subdomains)
